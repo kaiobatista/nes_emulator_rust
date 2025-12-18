@@ -13,7 +13,7 @@ use controller::Controller;
 
 fn main() {
     
-    let rom = Rom::new("nestest.nes".to_string());
+    let rom = Rom::new("iceclimber.nes".to_string());
     let ppu: PPU = PPU::new();
 
     let mut bus = Bus {

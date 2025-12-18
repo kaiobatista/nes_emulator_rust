@@ -36,7 +36,7 @@ impl Controller {
         let mut value = 0;
 
         if self.strobe & 1 == 1 {
-            value = self.buttons & 1;
+            value = (self.buttons >> 7) & 1;
         } else {
 
             if self.index < 8 {
@@ -48,7 +48,7 @@ impl Controller {
             self.index += 1;
         }
 
-        value
+        value | 0x40
     }
 
     pub fn set_button(&mut self, button_mask: u8, pressed: bool) {

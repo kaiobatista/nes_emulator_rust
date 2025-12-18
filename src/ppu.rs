@@ -45,6 +45,9 @@ pub struct PPU {
     cycle: i16,
 
     pub emitted_nmi: bool,
+
+    pub oam_addr: u8,
+    pub oam_data: [u8; 256],
 }
 
 impl PPU {
@@ -68,6 +71,9 @@ impl PPU {
             cycle: 0,
 
             emitted_nmi: false,
+
+            oam_addr: 0,
+            oam_data: [0x00; 256],
         }
     }
 
@@ -93,6 +99,19 @@ impl PPU {
                 self.emitted_nmi = true;
             }
         }
+
+        let show_background = (self.mask & 0x08) != 0;
+        let show_sprites = (self.mask & 0x10) != 0;
+
+        if show_background && show_sprites {
+            let sprite_0_y = self.oam_data[0] as i16;
+
+            if self.scanline == sprite_0_y {
+                if self.cycle == 2 {
+                    self.status |= 1 << 6;
+                }
+            }
+        }
     }
 
     pub fn cpu_read(&mut self, addr: u16, readonly: bool, rom: &mut Rom) -> u8 {
@@ -109,7 +128,10 @@ impl PPU {
                 }
             },
             0x0003 => {}, // OAM Addr
-            0x0004 => {}, // OAM Data
+            0x0004 => { // OAM Data
+               data = self.oam_data[self.oam_addr as usize];
+            },
+
             0x0005 => {}, // Scroll
             0x0006 => {}, // PPU Addr
             0x0007 => {   // PPU Data
@@ -143,9 +165,17 @@ impl PPU {
             0x0001 => {
                 self.mask = data;
             },
+
             0x0002 => {}, // Readonly
-            0x0003 => {},
-            0x0004 => {},
+            0x0003 => {
+                self.oam_addr = data;
+            },
+
+            0x0004 => {
+                self.oam_data[self.oam_addr as usize] = data;
+                self.oam_addr = self.oam_addr.wrapping_add(1);
+            },
+
             0x0005 => {
                 if !self.write_toggle {
                     self.fine_x = data & 0x07;

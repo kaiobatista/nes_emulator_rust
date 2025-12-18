@@ -44,6 +44,14 @@ impl Bus {
                 self.ppu.cpu_write(addr & 0x0007, data, &mut self.rom);
             }
 
+            0x4014 => {
+                let start = (data as u16) << 8;
+                for i in 0..256 {
+                    let byte = self.read(start + i);
+                    self.ppu.oam_data[self.ppu.oam_addr.wrapping_add(i as u8) as usize] = byte;
+                }
+            }
+
             0x4016 => {
                 self.controller[0].write(data);
                 self.controller[1].write(data);
