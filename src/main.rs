@@ -3,25 +3,28 @@ mod cpu;
 mod ppu;
 mod sdl_ui;
 mod ines_file;
+mod controller;
 
 use bus::Bus;
 use cpu::CPU;
 use ines_file::Rom;
 use ppu::PPU;
+use controller::Controller;
 
 fn main() {
     
-    let rom = Rom::new("./super_mario_bros.nes".to_string());
+    let rom = Rom::new("nestest.nes".to_string());
     let ppu: PPU = PPU::new();
 
     let mut bus = Bus {
         ram: [0x00; 2 * 1024],
         rom: rom,
         ppu: ppu,
+        controller: [Controller::new(), Controller::new()],
     };
 
     let mut cpu = CPU::new(&mut bus);
-
+    
     /*
     cpu.bus.write(0x8000, 0xA9); // LDA
     cpu.bus.write(0x8001, 0x05);
@@ -36,6 +39,8 @@ fn main() {
     cpu.bus.write(0x800A, 0xFA);
     */
     cpu.reset();
+
+    println!("PC: ${:04X}", cpu.registers.pc);
     
     sdl_ui::start_ui(cpu);
 

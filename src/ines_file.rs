@@ -15,6 +15,7 @@ pub struct Rom {
     pub trainer: Vec<u8>,
     pub prg_rom: Vec<u8>,
     pub chr_rom: Vec<u8>,
+    pub screen_mirroring: bool, // 0: Vertical & 1: Horizontal
 }
 
 impl Rom {
@@ -40,6 +41,8 @@ impl Rom {
             flags7: file_data[7],
         };
 
+        let screen_mirroring = (header.flags6 & 0x01) != 0;
+
         let trainer_present = header.flags6 & (1 << 2) != 0;
         let trainer_len = if trainer_present {TRAINER_SIZE} else {0};
 
@@ -62,6 +65,7 @@ impl Rom {
             trainer: trainer,
             prg_rom: prg_rom,
             chr_rom: chr_rom,
+            screen_mirroring: screen_mirroring,
 
         }
     }

@@ -1,10 +1,12 @@
 use crate::ppu::PPU;
 use crate::ines_file::Rom;
+use crate::controller::Controller;
 
 pub struct Bus {
     pub ram: [u8; 2 * 1024],
     pub rom: Rom,
     pub ppu: PPU,
+    pub controller: [Controller; 2],
 }
 
 impl Bus {
@@ -17,6 +19,10 @@ impl Bus {
             0x2000..=0x3FFF => {
                 self.ppu.cpu_read(addr & 0x0007, false, &mut self.rom)
             }
+
+            0x4016 => self.controller[0].read(),
+
+            0x4017 => self.controller[1].read(),
 
             0x8000..=0xFFFF => {
                 let offset = addr - 0x8000;
@@ -36,6 +42,11 @@ impl Bus {
 
             0x2000..=0x3FFF => {
                 self.ppu.cpu_write(addr & 0x0007, data, &mut self.rom);
+            }
+
+            0x4016 => {
+                self.controller[0].write(data);
+                self.controller[1].write(data);
             }
 
             0x8000..=0xFFFF => {

@@ -35,14 +35,16 @@ pub struct PPU {
     fine_x: u8,
     write_toggle: bool,
 
-    control: u8,
+    pub control: u8,
     mask: u8,
-    status: u8,
+    pub status: u8,
 
     data_buffer: u8,
 
     scanline: i16,
     cycle: i16,
+
+    pub emitted_nmi: bool,
 }
 
 impl PPU {
@@ -64,6 +66,8 @@ impl PPU {
 
             scanline: 0,
             cycle: 0,
+
+            emitted_nmi: false,
         }
     }
 
@@ -86,7 +90,7 @@ impl PPU {
             self.status |=  1 << 7;
 
             if (self.control & 0x80) != 0 {
-                // TODO: Trigger NMI na CPU
+                self.emitted_nmi = true;
             }
         }
     }
@@ -100,8 +104,8 @@ impl PPU {
             0x0002 => {   // Status
                 data = (self.status & 0xE0) | (self.data_buffer & 0x1F);
                 if !readonly {
-                    self.status &= !(1 << 7); // Limpa VBlank ao ler
-                    self.write_toggle = false; // Reseta latch
+                    self.status &= !(1 << 7);
+                    self.write_toggle = false;
                 }
             },
             0x0003 => {}, // OAM Addr
@@ -112,7 +116,6 @@ impl PPU {
                 data = self.data_buffer;
                 self.data_buffer = self.ppu_read(self.vram_addr, rom);
                 
-                // Paletas não têm delay
                 if self.vram_addr >= 0x3F00 {
                     data = self.data_buffer;
                 }
@@ -125,7 +128,58 @@ impl PPU {
     }
 
     pub fn cpu_write(&mut self, addr: u16, data: u8, rom: &mut Rom) {
+        match addr {
+            0x0000 => {
+                let old_nmi = (self.control & 0x80) != 0;
+                self.control = data;
+                let new_nmi = (self.control & 0x80) != 0;
 
+                self.temp_addr = (self.temp_addr & 0xF3FF) | ((data as u16 & 0x03) << 10);
+
+                if (self.status & 0x80) != 0 && !old_nmi && new_nmi {
+                    self.emitted_nmi = true;
+                }
+            },
+            0x0001 => {
+                self.mask = data;
+            },
+            0x0002 => {}, // Readonly
+            0x0003 => {},
+            0x0004 => {},
+            0x0005 => {
+                if !self.write_toggle {
+                    self.fine_x = data & 0x07;
+
+                    self.temp_addr = (self.temp_addr & 0xFFE0) | ((data as u16) >> 3);
+                    self.write_toggle = true;
+                } else {
+                    let fine_y = (data as u16 & 0x07) << 12;
+                    let coarse_y = (data as u16 & 0xF8) << 2;
+
+                    self.temp_addr = (self.temp_addr & 0x8FFF) | fine_y;
+                    self.temp_addr = (self.temp_addr & 0xFC1F) | coarse_y;
+
+                    self.write_toggle = false;
+                }
+            },
+            0x0006 => {
+                if !self.write_toggle {
+                    self.temp_addr = (self.temp_addr & 0x00FF) | (((data as u16) & 0x3F) << 8);
+                    self.write_toggle = true;
+                } else {
+                    self.temp_addr = (self.temp_addr & 0xFF00) | (data as u16);
+                    self.vram_addr = self.temp_addr;
+                    self.write_toggle = false;
+                }
+            },
+            0x0007 => {
+                self.ppu_write(self.vram_addr, data, rom);
+
+                let increment = if (self.control & 0x04) == 0 { 1 } else { 32 };
+                self.vram_addr = self.vram_addr.wrapping_add(increment);
+            },
+            _ => {}
+        }
     }
 
     pub fn ppu_read(&self, addr: u16, rom: &Rom) -> u8 {
@@ -142,11 +196,17 @@ impl PPU {
 
             0x2000..=0x3EEF => {
                 let masked_addr = addr & 0x0FFF;
-                if masked_addr < 0x0800 {
-                    self.tbl_name[0][(masked_addr & 0x03FF) as usize]
+                let vram_index = masked_addr & 0x03FF;
+                let name_table = masked_addr / 0x0400;
+
+                let final_idx = if rom.screen_mirroring {
+                    if name_table == 0 || name_table == 2 { 0 } else { 1 }
                 } else {
-                    self.tbl_name[1][(masked_addr & 0x03FF) as usize]
-                }
+                    if name_table == 0 || name_table == 1 { 0 } else { 1 }
+                };
+
+                self.tbl_name[final_idx][vram_index as usize]
+
             },
 
             0x3F00..=0x3FFF => {
@@ -171,10 +231,19 @@ impl PPU {
 
             0x2000..=0x3EFF => {
                 let masked_addr = addr & 0x0FFF;
-                if masked_addr < 0x0800 {
-                    self.tbl_name[0][(masked_addr & 0x03FF) as usize] = data;
+                let vram_index = masked_addr & 0x03FF;
+                let name_table = masked_addr / 0x0400;
+
+                let final_idx = if rom.screen_mirroring {
+                    if name_table == 0 || name_table == 2 { 0 } else { 1 }
+                    } else {
+                    if name_table == 0 || name_table == 1 { 0 } else { 1 }
+                };
+
+                if final_idx < 0x0400 {
+                    self.tbl_name[final_idx][vram_index as usize] = data;
                 } else {
-                    self.tbl_name[1][(masked_addr & 0x03FF) as usize] = data;
+                    self.tbl_name[1][vram_index as usize] = data;
                 }
             },
 
@@ -220,7 +289,16 @@ impl PPU {
                             final_palette_index = 0x30;
                         }
 
-                        let color: Color = get_color_from_palette(final_palette_index);
+                        let mut color: Color = get_color_from_palette(final_palette_index);
+                        /*
+                        color = match color_index {
+                            0 => Color::RGB(0, 0, 0),       // Preto
+                            1 => Color::RGB(255, 100, 100), // Cinza Escuro
+                            2 => Color::RGB(170, 255, 170), // Cinza Claro
+                            3 => Color::RGB(255, 255, 255), // Branco
+                            _ => Color::RGB(0,0,0),
+                        };
+                        */
                         image_data.push(color);
                     }
                 }

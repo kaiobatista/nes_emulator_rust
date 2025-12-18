@@ -78,7 +78,7 @@ impl<'lifetime> CPU <'lifetime> {
     }
 
     pub fn irq(&mut self) {
-        if self.get_flag(Flag::C) == 0 {
+        if self.get_flag(Flag::I) == 0 {
             self.bus.write(0x0100 + self.registers.sp as u16, (((self.registers.pc as u16) >> 8) & 0x00FF) as u8);
             self.registers.sp = self.registers.sp.wrapping_sub(1);
             self.bus.write(0x0100 + self.registers.sp as u16, ((self.registers.pc as u16) & 0x00FF) as u8);
@@ -93,7 +93,7 @@ impl<'lifetime> CPU <'lifetime> {
 
             self.addr_abs = 0xFFFE;
             let low = self.bus.read(self.addr_abs);
-            let high = self.bus.read(self.addr_abs);
+            let high = self.bus.read(self.addr_abs.wrapping_add(1));
             self.registers.pc = ((high as u16) << 8) | low as u16;
 
             self.cycles += 7;
@@ -101,36 +101,34 @@ impl<'lifetime> CPU <'lifetime> {
     }
 
     pub fn nmi(&mut self) {
-        if self.get_flag(Flag::C) == 0 {
-            self.bus.write(0x0100 + self.registers.sp as u16, (((self.registers.pc as u16) >> 8) & 0x00FF) as u8);
-            self.registers.sp = self.registers.sp.wrapping_sub(1);
-            self.bus.write(0x0100 + self.registers.sp as u16, ((self.registers.pc as u16) & 0x00FF) as u8);
-            self.registers.sp = self.registers.sp.wrapping_sub(1);
+        self.bus.write(0x0100 + self.registers.sp as u16, (((self.registers.pc as u16) >> 8) & 0x00FF) as u8);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
+        self.bus.write(0x0100 + self.registers.sp as u16, ((self.registers.pc as u16) & 0x00FF) as u8);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
 
-            self.set_flag(Flag::B, false);
-            self.set_flag(Flag::U, true);
-            self.set_flag(Flag::I, true);
+        self.set_flag(Flag::B, false);
+        self.set_flag(Flag::U, true);
+        self.set_flag(Flag::I, true);
 
-            self.bus.write(0x0100 + self.registers.sp as u16, self.registers.f);
-            self.registers.sp = self.registers.sp.wrapping_sub(1);
+        self.bus.write(0x0100 + self.registers.sp as u16, self.registers.f);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
 
-            self.addr_abs = 0xFFFA;
-            let low = self.bus.read(self.addr_abs);
-            let high = self.bus.read(self.addr_abs.wrapping_add(1));
-            self.registers.pc = ((high as u16) << 8) | low as u16;
+        self.addr_abs = 0xFFFA;
+        let low = self.bus.read(self.addr_abs);
+        let high = self.bus.read(self.addr_abs.wrapping_add(1));
+        self.registers.pc = ((high as u16) << 8) | low as u16;
 
-            self.cycles += 8;
-        }
+        self.cycles += 7;
     }
 
     pub fn step(&mut self) -> u8 {  // Return the cicles count
         let opcode = self.bus.read(self.registers.pc);
-        println!("PC: {:04X}", self.registers.pc);
+        // println!("PC: {:04X}", self.registers.pc);
         self.registers.pc = self.registers.pc.wrapping_add(1);
 
         match opcode {
             0x00 => {
-                
+                self.brk();
             }
            // ORA
             0x01 => { self.izx(); self.fetch(self.addr_abs); self.ora(); }
@@ -169,6 +167,7 @@ impl<'lifetime> CPU <'lifetime> {
             // SBC
             0xE1 => { self.izx(); self.fetch(self.addr_abs); self.sbc(); }
             0xE5 => { self.zp0(); self.fetch(self.addr_abs); self.sbc(); }
+            0xED => { self.abs(); self.fetch(self.addr_abs); self.sbc();}
             0xF1 => { self.izy(); self.fetch(self.addr_abs); self.sbc(); }
             0xF5 => { self.zpx(); self.fetch(self.addr_abs); self.sbc(); }
             0xF9 => { self.aby(); self.fetch(self.addr_abs); self.sbc(); }
@@ -364,6 +363,7 @@ impl<'lifetime> CPU <'lifetime> {
 
             0x49 => {
                 self.imm();
+                self.fetch(self.addr_abs);
                 self.eor();
             }
 
@@ -518,7 +518,7 @@ impl<'lifetime> CPU <'lifetime> {
         }
 
         self.cycles += self.lookup_table[opcode as usize].cycles as usize;
-        println!("OPCODE: {:02X} | NAME: {} | Fetched data: {:02X} | Absolute Addr: {:04X} | Relative Addr: {:02X}", opcode, self.lookup_table[opcode as usize].name, self.fetched_data, self.addr_abs, self.addr_rel);
+        // println!("OPCODE: {:02X} | NAME: {} | Fetched data: {:02X} | Absolute Addr: {:04X} | Relative Addr: {:02X}", opcode, self.lookup_table[opcode as usize].name, self.fetched_data, self.addr_abs, self.addr_rel);
         opcode
     }
 
@@ -628,7 +628,7 @@ impl<'lifetime> CPU <'lifetime> {
         if ptr_low == 0x00FF {
             self.addr_abs = (self.bus.read(ptr & 0xFF00) as u16) << 8 | self.bus.read(ptr) as u16;
         } else {
-            self.addr_abs = ((self.bus.read(ptr + 1 as u16) as u16) << 8 | self.bus.read(ptr) as u16) as u16;
+            self.addr_abs = ((self.bus.read((ptr + 1) as u16) as u16) << 8 | self.bus.read(ptr) as u16) as u16;
         }
 
         (self.addr_abs, 0)
@@ -672,24 +672,32 @@ impl<'lifetime> CPU <'lifetime> {
     // Operations
     
     fn adc(&mut self) -> u8 {
-        let result = self.registers.a as u16 + self.fetched_data as u16 + self.get_flag(Flag::C) as u16;
+        let a = self.registers.a as u16;
+        let m = self.fetched_data as u16;
+        let c = self.get_flag(Flag::C) as u16;
+
+        let result = a + m + c;
         self.registers.a = (result & 0x00FF) as u8;
 
         self.set_flag(Flag::C, result > 0xFF);
-        self.set_flag(Flag::Z, result == 0);
-        self.set_flag(Flag::V, ((result ^ self.registers.a as u16) & (result ^ self.fetched_data as u16) & 0x80) != 0x00);
+        self.set_flag(Flag::Z, (result & 0x00FF) == 0x00);
+        self.set_flag(Flag::V, (!(a ^ m) & (a ^ result)) & 0x0080 != 0);
         self.set_flag(Flag::N, (result & 0x80) != 0x00);
 
         return 0
     }
 
     fn sbc(&mut self) -> u8 {
-        let result = self.registers.a as u16 + ((self.fetched_data as u16) ^ 0x00FF) + self.get_flag(Flag::C) as u16;
+        let a = self.registers.a as u16;
+        let m = (self.fetched_data as u16) ^ 0x00FF;
+        let c = self.get_flag(Flag::C) as u16;
+
+        let result = a + m + c;
         self.registers.a = (result & 0x00FF) as u8;
 
         self.set_flag(Flag::C, result > 0xFF);
-        self.set_flag(Flag::Z, result == 0);
-        self.set_flag(Flag::V, ((result ^ self.registers.a as u16) & ((result ^ (self.fetched_data as u16) ^ 0x00FF) & 0x0080) != 0x00));
+        self.set_flag(Flag::Z, (result & 0x00FF) == 0);
+        self.set_flag(Flag::V, ((a ^ result) & (m ^ result) & 0x0080) != 0);
         self.set_flag(Flag::N, (result & 0x80) != 0x00);
 
         return 0
@@ -710,15 +718,38 @@ impl<'lifetime> CPU <'lifetime> {
     }
 
     fn brk(&mut self) -> u8 {
-        return 0
+        self.registers.pc = self.registers.pc.wrapping_add(1);
+
+        self.bus.write(0x0100 + self.registers.sp as u16, ((self.registers.pc >> 8) & 0xFF) as u8);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
+        self.bus.write(0x0100 + self.registers.sp as u16, (self.registers.pc & 0xFF) as u8);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
+
+        let status_to_stack = self.registers.f | (Flag::B as u8) | (Flag::U as u8);
+        self.bus.write(0x0100 + self.registers.sp as u16, status_to_stack);
+        self.registers.sp = self.registers.sp.wrapping_sub(1);
+
+        self.set_flag(Flag::I, true);
+
+        let low = self.bus.read(0xFFFE) as u16;
+        let high = self.bus.read(0xFFFF) as u16;
+        self.registers.pc = (high << 8) | low;
+
+        0
     }
 
     fn ora(&mut self) -> u8 {
+        self.registers.a |= self.fetched_data;
+
+        self.set_flag(Flag::Z, self.registers.a == 0x00);
+        self.set_flag(Flag::N, (self.registers.a & 0x80) != 0x00);
+
         return 0
     }
 
     fn eor(&mut self) -> u8 {
         let result = self.registers.a ^ self.fetched_data;
+        self.registers.a = result;
 
         self.set_flag(Flag::Z, result == 0);
         self.set_flag(Flag::N, (result & 0x80) != 0);
@@ -753,7 +784,7 @@ impl<'lifetime> CPU <'lifetime> {
     fn cmp(&mut self) -> u8 {
         self.set_flag(Flag::C, self.registers.a >= self.fetched_data);
         self.set_flag(Flag::Z, self.registers.a == self.fetched_data);
-        self.set_flag(Flag::N, self.registers.a < self.fetched_data);
+        self.set_flag(Flag::N, (self.registers.a.wrapping_sub(self.fetched_data) & 0x80) != 0);
 
         return 0;
     }
@@ -761,7 +792,7 @@ impl<'lifetime> CPU <'lifetime> {
     fn cpx(&mut self) -> u8 {
         self.set_flag(Flag::C, self.registers.x >= self.fetched_data);
         self.set_flag(Flag::Z, self.registers.x == self.fetched_data);
-        self.set_flag(Flag::N, self.registers.x < self.fetched_data);
+        self.set_flag(Flag::N, (self.registers.x.wrapping_sub(self.fetched_data) & 0x80) != 0);
 
         return 0;
     }
@@ -769,7 +800,7 @@ impl<'lifetime> CPU <'lifetime> {
     fn cpy(&mut self) -> u8 {
         self.set_flag(Flag::C, self.registers.y >= self.fetched_data);
         self.set_flag(Flag::Z, self.registers.y == self.fetched_data);
-        self.set_flag(Flag::N, self.registers.y < self.fetched_data);
+        self.set_flag(Flag::N, (self.registers.y.wrapping_sub(self.fetched_data) & 0x80) != 0);
 
         return 0;
     }
@@ -897,20 +928,21 @@ impl<'lifetime> CPU <'lifetime> {
 
     fn rts(&mut self) -> u8 {
         self.registers.sp = self.registers.sp.wrapping_add(1);
-        let low = self.bus.read(0x0100 + self.registers.sp as u16);
+        let low = self.bus.read(0x0100 + self.registers.sp as u16) as u16;
 
         self.registers.sp = self.registers.sp.wrapping_add(1);
-        let high = self.bus.read(0x0100 + self.registers.sp as u16);
+        let high = self.bus.read(0x0100 + self.registers.sp as u16) as u16;
 
-        self.registers.pc = ((high as u16) << 8) | low as u16;
+        self.registers.pc = ((high << 8) | low);
+        self.registers.pc = self.registers.pc + 1;
 
         return 0
     }
 
     fn inx(&mut self) -> u8 {
         self.registers.x = self.registers.x.wrapping_add(1);
-        self.set_flag(Flag::Z, self.registers.y == 0);
-        self.set_flag(Flag::N, (self.registers.y & 0x80) != 0);
+        self.set_flag(Flag::Z, self.registers.x == 0);
+        self.set_flag(Flag::N, (self.registers.x & 0x80) != 0);
 
         return 0
     }
@@ -1055,21 +1087,21 @@ impl<'lifetime> CPU <'lifetime> {
 
     fn bvs(&mut self) -> u8 {
         if self.get_flag(Flag::V) == 1 {
-            self.registers.pc = self.registers.pc.wrapping_add((self.addr_rel as i8 as i16) as u16);
+            self.registers.pc = self.registers.pc.wrapping_add(self.addr_rel as i8 as i16 as u16);
         }
         return 0
     }
 
     fn bvc(&mut self) -> u8 {
         if self.get_flag(Flag::V) == 0 {
-            self.registers.pc = self.registers.pc.wrapping_add((self.addr_rel as i8 as i16) as u16);
+            self.registers.pc = self.registers.pc.wrapping_add(self.addr_rel as i8 as i16 as u16);
         }
         return 0
     }
     
     fn beq(&mut self) -> u8 {
         if self.get_flag(Flag::Z) == 1 {
-            self.registers.pc = self.registers.pc.wrapping_add((self.addr_rel as i8 as i16) as u16);
+            self.registers.pc = self.registers.pc.wrapping_add(self.addr_rel as i8 as i16 as u16);
             return 1
         }
         return 0
@@ -1100,6 +1132,8 @@ impl<'lifetime> CPU <'lifetime> {
     }
 
     fn jsr(&mut self) -> u8 {
+        self.registers.pc = self.registers.pc.wrapping_sub(1);
+
         self.bus.write(0x0100 | self.registers.sp as u16, ((self.registers.pc & 0xFF00) >> 8) as u8);
         self.registers.sp = self.registers.sp.wrapping_sub(1);
         self.bus.write(0x0100 | self.registers.sp as u16, (self.registers.pc & 0x00FF) as u8);
@@ -1156,7 +1190,7 @@ impl<'lifetime> CPU <'lifetime> {
         self.registers.sp = self.registers.sp.wrapping_add(1);
         let mut result = self.bus.read(0x0100 + self.registers.sp as u16);
 
-        result |= (Flag::U as u8);
+        result |= Flag::U as u8;
         result &= !(Flag::B as u8);
 
         self.registers.f = result;
